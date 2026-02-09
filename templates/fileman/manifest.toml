@@ -1,4 +1,0 @@
-name = "fileman"
-version = "0.1.0"
-type = "component-library"
-description = "Minimal lsd wrapper to snapshot repo filesystem -> JSON/JSONL and print tree"
