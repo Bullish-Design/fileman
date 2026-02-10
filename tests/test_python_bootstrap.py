@@ -5,6 +5,7 @@ import json
 import platform
 import shutil
 import subprocess
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 import pytest
@@ -126,9 +127,10 @@ def test_wrapper_include_text_and_max_text_truncates_output() -> None:
 
 
 def _load_wrapper_module():
-    spec = importlib.util.spec_from_file_location("python_json_wrapper", WRAPPER_PATH)
-    assert spec is not None
-    assert spec.loader is not None
+    loader = SourceFileLoader("python_json_wrapper", str(WRAPPER_PATH))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None, f"failed to create module spec for {WRAPPER_PATH}"
+    assert spec.loader is not None, f"failed to create module loader for {WRAPPER_PATH}"
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
