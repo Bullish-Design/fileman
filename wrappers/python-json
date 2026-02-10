@@ -1,0 +1,125 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#   "tree-sitter>=0.22.0",
+# ]
+# ///
+"""Parse stdin with tree-sitter-python and emit JSON AST."""
+
+from __future__ import annotations
+
+import argparse
+import ctypes
+import json
+import platform
+import sys
+from pathlib import Path
+from typing import Any
+
+from tree_sitter import Language, Parser
+
+EXIT_ERROR = 2
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Parse input with tree-sitter-python and emit JSON")
+    parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
+    parser.add_argument("--include-text", action="store_true", help="Include node text in output")
+    parser.add_argument(
+        "--max-text",
+        type=int,
+        default=4096,
+        help="Max text bytes per node when --include-text is set (default: 4096)",
+    )
+    args = parser.parse_args()
+    if args.max_text < 0:
+        parser.error("--max-text must be >= 0")
+    return args
+
+
+def resolve_library_path() -> Path:
+    ext = "dylib" if platform.system() == "Darwin" else "so"
+    return Path(__file__).resolve().parent.parent / "build" / f"python.{ext}"
+
+
+def load_language(lib_path: Path) -> Language:
+    if not lib_path.exists():
+        raise FileNotFoundError(f"grammar shared library not found: {lib_path}")
+
+    symbol_name = "tree_sitter_python"
+    cdll = ctypes.CDLL(str(lib_path))
+    try:
+        factory = getattr(cdll, symbol_name)
+    except AttributeError as exc:
+        raise RuntimeError(f"symbol not found in grammar library: {symbol_name}") from exc
+
+    factory.restype = ctypes.c_void_p
+    language_ptr = factory()
+    if not language_ptr:
+        raise RuntimeError(f"{symbol_name}() returned a null pointer")
+
+    try:
+        return Language(language_ptr)
+    except TypeError:
+        return Language(str(lib_path), "python")
+
+
+def point_to_list(point: Any) -> list[int]:
+    if hasattr(point, "row") and hasattr(point, "column"):
+        return [int(point.row), int(point.column)]
+    row, col = point
+    return [int(row), int(col)]
+
+
+def node_to_dict(node: Any, source: bytes, include_text: bool, max_text: int) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "type": node.type,
+        "start_byte": node.start_byte,
+        "end_byte": node.end_byte,
+        "start_point": point_to_list(node.start_point),
+        "end_point": point_to_list(node.end_point),
+        "children": [node_to_dict(child, source, include_text, max_text) for child in node.children],
+    }
+
+    if include_text:
+        raw = source[node.start_byte : node.end_byte]
+        if len(raw) > max_text:
+            raw = raw[:max_text]
+            text = raw.decode("utf-8", errors="replace") + "..."
+        else:
+            text = raw.decode("utf-8", errors="replace")
+        result["text"] = text
+
+    return result
+
+
+def main() -> int:
+    args = parse_args()
+
+    try:
+        language = load_language(resolve_library_path())
+        parser = Parser()
+        if hasattr(parser, "set_language"):
+            parser.set_language(language)
+        else:
+            parser.language = language
+
+        source = sys.stdin.buffer.read()
+        tree = parser.parse(source)
+        ast = node_to_dict(tree.root_node, source, args.include_text, args.max_text)
+
+        if args.pretty:
+            json.dump(ast, sys.stdout, indent=2)
+            sys.stdout.write("\n")
+        else:
+            json.dump(ast, sys.stdout)
+
+        return 0
+    except Exception as exc:  # noqa: BLE001 - return tool-friendly non-zero exit
+        print(f"python-json error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
