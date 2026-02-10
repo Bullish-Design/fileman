@@ -1,535 +1,339 @@
-# AGENTS.md — Build Fileman from scratch (Devman component library)
+# AGENTS.md
 
-This doc is written for an automation/agent that needs to create **Fileman** end-to-end as a **Devman template component library**.
+## Project Context
 
-**Read first (required):**
-1) `DEVMAN_CORE_CONCEPTS.md` (Devman first principles, store/instance/symlink/run model)
-2) `FILEMAN_CONCEPT.md` (Fileman’s goals, layout, CLI shape, devenv/just patterns)
+**Purpose:** Build grammar-specific CLI parsers using tree-sitter that emit JSON ASTs. Each parser is a Python uv script wrapping a compiled tree-sitter grammar.
 
----
+**MVP Target:** Parse `lsd --long` output, validate against pathlib filesystem queries, establish reusable pattern.
 
-## 0) Success criteria (Definition of Done)
-
-You are done when all of these are true:
-
-- `fileman snapshot`:
-  - scans a repo root
-  - writes **one JSON snapshot object** to a file (JSON or JSONL)
-  - prints a clean terminal tree (via `lsd --tree`) when `--print` is set
-- The **default output path** is under `.devman/out/fileman/…`
-- The `just` recipe:
-  - is **idempotent**
-  - prints an artifact marker line `DEV_MAN_ARTIFACT: <path>`
-  - supports Devman’s “run model” expectations (writes outputs to `.devman/out/…`)
-- `nix/fileman.devenv.nix` is **importable** by other Devman libraries/repos (`imports = [ ./.devman/fileman/nix/fileman.devenv.nix ];`)
-- The template payload follows Devman’s **store + instance + symlink semantics** (no repo-local state outside `.devman/out/…`)
+**Key Insight:** tree-sitter CLI is a development tool, not a pipeline component. This fills the gap for production CLI-to-JSON parsers.
 
 ---
 
-## 1) Create the Devman template skeleton
-
-Devman’s canonical store layout is:
+## Repository Structure
 
 ```
-<DEV_MAN_STORE>/
-  templates/
-    fileman/
-      .devman/
-        templates/
-          fileman/
-            ...payload...
-      manifest.toml
-```
+grammars/tree-sitter-<lang>/
+  grammar.js              # Syntax rules - source of truth
+  src/parser.c            # Generated (never edit)
+  test/corpus/*.txt       # Corpus tests
 
-Create this folder structure:
+build/
+  <lang>.so / .dylib      # Compiled grammars (gitignored)
 
-```
-templates/fileman/
-  .devman/templates/fileman/
-    nix/
-    just/
-    bin/
-    src/
-  manifest.toml
-  .gitignore
-  README.md
-  FILEMAN_CONCEPT.md
-  AGENTS.md
-```
+wrappers/
+  <lang>-json             # Generated uv scripts
 
-### 1.1 manifest.toml (minimal)
-You don’t have the full manifest schema here. Keep it minimal and consistent with other templates in the same store.
+tests/
+  test_correctness.py     # Pytest integration tests
 
-Suggested minimal shape (adjust keys to match your Devman implementation):
+scripts/
+  *.py                    # uv scripts for complex operations
 
-```toml
-name = "fileman"
-version = "0.1.0"
-type = "component-library"
-description = "Minimal lsd wrapper to snapshot repo filesystem -> JSON/JSONL and print tree"
-```
+test_files/               # Generated (gitignored)
 
-If your store requires additional fields (entry points, hooks, links), copy the pattern from an existing template in the store.
-
-### 1.2 .gitignore (template repo only)
-If Fileman itself lives in git (not required), ignore outputs:
-
-```
-.devman/out/
+Justfile                  # Build automation
+devenv.nix                # Environment packages
+pyproject.toml            # Python dependencies
 ```
 
 ---
 
-## 2) Implement the Fileman payload
+## Development Workflow
 
-All runtime bits belong inside:
+### Standard Loop
 
-```
-templates/fileman/.devman/templates/fileman/
-```
+```bash
+# 1. Edit grammar
+vim grammars/tree-sitter-lsd/grammar.js
 
-### 2.1 Importable devenv module: `nix/fileman.devenv.nix`
+# 2. Generate + compile
+just grammar-generate lsd
+just grammar-compile lsd
 
-Create:
+# 3. Test
+just grammar-test lsd        # Corpus tests
+just test-correctness         # Full integration
 
-`templates/fileman/.devman/templates/fileman/nix/fileman.devenv.nix`
-
-Use `lsd`, and a Python env with `pydantic` (and nothing else).
-
-```nix
-{ pkgs, ... }:
-let
-  py = pkgs.python3.withPackages (ps: [ ps.pydantic ]);
-
-  fileman = pkgs.writeShellApplication {
-    name = "fileman";
-    runtimeInputs = [ py pkgs.lsd ];
-    text = ''
-      # Expect to run inside a repo that has .devman -> instance symlink.
-      exec python3 ./.devman/fileman/src/fileman_snapshot.py "$@"
-    '';
-  };
-in
-{
-  packages = [
-    pkgs.lsd
-    py
-    fileman
-  ];
-}
+# 4. Manual check
+just lsd-parse test_files/
 ```
 
-Notes:
-- Keep this module **import-only**: it should not assume anything besides `.devman/fileman/...` being present.
-- `fileman_snapshot.py` lives in the instance, so the relative path is stable.
+### When to Rebuild
+
+**Regenerate (tree-sitter generate):** Modified grammar.js
+**Recompile (gcc):** After regeneration
+**No rebuild:** Wrapper edits, test changes
 
 ---
 
-### 2.2 Just recipes: `just/fileman.just`
+## Essential Skills
 
-Create:
+Detailed patterns in separate skill documents:
 
-`templates/fileman/.devman/templates/fileman/just/fileman.just`
-
-Goals:
-- single primary recipe: `fileman:snapshot`
-- write artifacts to `.devman/out/fileman`
-- print `DEV_MAN_ARTIFACT: <path>` so Devman can capture it
-
-```make
-# fileman.just — import from a repo's Justfile
-# Usage:
-#   import ".devman/fileman/just/fileman.just"
-#
-# Then run:
-#   just fileman:snapshot
-
-fileman:snapshot root="." out=".devman/out/fileman/snapshot.jsonl" depth="" include_hidden="false":
-  mkdir -p .devman/out/fileman
-
-  if [ "${DEV_MAN_SIMULATE:-0}" = "1" ]; then     echo "[simulate] would run fileman snapshot --root {{root}} --out {{out}} --jsonl";     echo "DEV_MAN_ARTIFACT: {{out}}";     exit 0;   fi
-
-  EXTRA=""
-  if [ -n "{{depth}}" ]; then EXTRA="$EXTRA --depth {{depth}}"; fi
-  if [ "{{include_hidden}}" = "true" ]; then EXTRA="$EXTRA --include-hidden"; fi
-
-  fileman snapshot --root "{{root}}" --out "{{out}}" --jsonl --print $EXTRA
-
-  echo "DEV_MAN_ARTIFACT: {{out}}"
-```
+- **`skills/treesitter-grammar.md`** - Grammar DSL, parsing patterns, corpus tests, debugging
+- **`skills/devenv-justfile-integration.md`** - Justfile recipes, platform detection, uv script integration
+- **`skills/cli-parser-validation.md`** - Test strategies, ground truth comparison, fixtures
 
 ---
 
-### 2.3 CLI entrypoint script: `src/fileman_snapshot.py`
+## Common Tasks
 
-Create:
+### Add New Grammar Rule
 
-`templates/fileman/.devman/templates/fileman/src/fileman_snapshot.py`
+1. Identify unparsed pattern in sample output
+2. Write corpus test in `test/corpus/*.txt`
+3. Add rule to `grammar.js`
+4. Run `just grammar-test <lang>` - expect failure
+5. Iterate until test passes
+6. Run `just test-correctness` to check regressions
 
-Requirements:
-- fast scan via `os.scandir()`
-- default excludes include **`.devman`** and `.git`
-- write a **single JSON object** (JSONL: one line)
-- print tree using `lsd` (not your own tree renderer)
+### Debug ERROR Nodes
 
-**Minimal implementation (copy/paste):**
+1. Isolate input: `echo "problematic line" > debug.txt`
+2. Parse: `tree-sitter parse debug.txt`
+3. Identify ERROR location in tree
+4. Check grammar rule at that position
+5. Add explicit whitespace if needed
+6. Add corpus test for the fix
 
+### Add Field Extraction
+
+1. Ensure grammar recognizes field (corpus test)
+2. Test harness will extract from AST automatically
+3. Add normalization if needed (pathlib vs CLI format)
+4. Update comparison assertions
+
+---
+
+## Critical Pitfalls
+
+### Grammar Anti-Patterns
+
+**❌ Greedy regex before specific fields:**
+```javascript
+name: $ => /.*/,  // Eats everything, breaks parsing
+```
+
+**✓ Bounded capture:**
+```javascript
+name: $ => /[^\n]+/,  // Stop at newline
+```
+
+**❌ Missing explicit whitespace:**
+```javascript
+file_entry: $ => seq($.user, $.group),  // Fields merge
+```
+
+**✓ Explicit delimiters:**
+```javascript
+file_entry: $ => seq($.user, /\s+/, $.group),
+```
+
+**❌ Wrong choice order:**
+```javascript
+value: $ => choice(/[0-9]+/, /[0-9]+\.[0-9]+/),  // Float never matches
+```
+
+**✓ Specific first:**
+```javascript
+value: $ => choice(/[0-9]+\.[0-9]+/, /[0-9]+/),
+```
+
+### Test Anti-Patterns
+
+**❌ Order-dependent comparison:**
 ```python
-#!/usr/bin/env python3
-from __future__ import annotations
-
-import argparse
-import fnmatch
-import json
-import os
-import subprocess
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import List, Optional, Sequence, Tuple, Union
-
-from pydantic import BaseModel, Field
-
-
-# -----------------
-# Models
-# -----------------
-
-class Node(BaseModel):
-    type: str
-    name: str
-    relpath: str
-    mode: int
-    uid: int
-    gid: int
-    mtime_ns: int
-    inode: int
-    dev: int
-
-
-class FileNode(Node):
-    type: str = Field(default="file")
-    size: int
-
-
-class SymlinkNode(Node):
-    type: str = Field(default="symlink")
-    target: str
-
-
-class DirNode(Node):
-    type: str = Field(default="dir")
-    children: List[Node] = Field(default_factory=list)
-
-
-AnyNode = Union[FileNode, SymlinkNode, DirNode]
-
-
-# -----------------
-# Scan options
-# -----------------
-
-DEFAULT_EXCLUDES: Tuple[str, ...] = (
-    ".git",
-    ".jj",
-    ".hg",
-    ".svn",
-    ".devman",
-    "node_modules",
-    "__pycache__",
-    ".venv",
-    "target",
-    "dist",
-    "build",
-)
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-def is_hidden(name: str) -> bool:
-    return name.startswith(".")
-
-def excluded(name: str, relpath: str, patterns: Sequence[str]) -> bool:
-    for pat in patterns:
-        if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(relpath, pat):
-            return True
-    return False
-
-def relpath(root: Path, p: Path) -> str:
-    # Portable snapshot paths
-    return str(p.relative_to(root)).replace(os.sep, "/")
-
-def scan_tree(
-    root: Path,
-    *,
-    max_depth: Optional[int],
-    include_hidden: bool,
-    follow_symlinks: bool,
-    exclude_globs: Sequence[str],
-) -> DirNode:
-    root = root.resolve()
-    st = root.stat()
-
-    root_node = DirNode(
-        name=".",
-        relpath=".",
-        mode=st.st_mode,
-        uid=getattr(st, "st_uid", 0),
-        gid=getattr(st, "st_gid", 0),
-        mtime_ns=st.st_mtime_ns,
-        inode=getattr(st, "st_ino", 0),
-        dev=getattr(st, "st_dev", 0),
-        children=[],
-    )
-
-    stack: List[Tuple[Path, DirNode, int]] = [(root, root_node, 0)]
-
-    while stack:
-        dpath, dnode, depth = stack.pop()
-        if max_depth is not None and depth >= max_depth:
-            continue
-
-        try:
-            with os.scandir(dpath) as it:
-                for e in it:
-                    name = e.name
-                    if not include_hidden and is_hidden(name):
-                        continue
-
-                    p = Path(e.path)
-                    rp = relpath(root, p)
-
-                    if excluded(name, rp, exclude_globs):
-                        continue
-
-                    try:
-                        st = e.stat(follow_symlinks=follow_symlinks)
-                    except OSError:
-                        continue
-
-                    base = dict(
-                        name=name,
-                        relpath=rp,
-                        mode=st.st_mode,
-                        uid=getattr(st, "st_uid", 0),
-                        gid=getattr(st, "st_gid", 0),
-                        mtime_ns=st.st_mtime_ns,
-                        inode=getattr(st, "st_ino", 0),
-                        dev=getattr(st, "st_dev", 0),
-                    )
-
-                    if e.is_symlink():
-                        try:
-                            target = os.readlink(e.path)
-                        except OSError:
-                            target = ""
-                        dnode.children.append(SymlinkNode(**base, target=target))
-                        continue
-
-                    if e.is_dir(follow_symlinks=follow_symlinks):
-                        child = DirNode(**base, children=[])
-                        dnode.children.append(child)
-                        stack.append((p, child, depth + 1))
-                    else:
-                        dnode.children.append(FileNode(**base, size=st.st_size))
-        except OSError:
-            continue
-
-    return root_node
-
-def write_snapshot(tree: DirNode, out: Path, *, jsonl: bool, meta: dict) -> None:
-    payload = {
-        "schema": "fileman.snapshot.v1",
-        "generated_at": now_iso(),
-        **meta,
-        "tree": tree.model_dump(),
-    }
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", encoding="utf-8") as f:
-        if jsonl:
-            f.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-            f.write("\n")
-        else:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-
-def print_tree_with_lsd(root: Path, *, depth: Optional[int], include_hidden: bool) -> None:
-    cmd = ["lsd", "--tree", "--icon", "never", "--ignore-config"]
-    # Prefer no-color when possible; `lsd` flag support can vary by build.
-    # NO_COLOR is widely recognized; `lsd` also respects config when not ignored.
-    env = dict(os.environ)
-    env["NO_COLOR"] = "1"
-
-    if include_hidden:
-        cmd.append("-a")
-    if depth is not None:
-        cmd += ["--depth", str(depth)]
-
-    cmd.append(str(root))
-
-    subprocess.run(cmd, env=env, check=False)
-
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="fileman")
-    sub = p.add_subparsers(dest="cmd", required=True)
-
-    s = sub.add_parser("snapshot", help="snapshot repo filesystem -> JSON/JSONL; optionally print tree")
-    s.add_argument("--root", default=".", help="repo root (default: .)")
-    s.add_argument("--out", default=".devman/out/fileman/snapshot.jsonl", help="output file path")
-    fmt = s.add_mutually_exclusive_group()
-    fmt.add_argument("--jsonl", action="store_true", help="write compact JSONL (one JSON object per line)")
-    fmt.add_argument("--json", action="store_true", help="write pretty JSON")
-    s.add_argument("--depth", type=int, default=None, help="max depth (default: unlimited)")
-    s.add_argument("--include-hidden", action="store_true", help="include dotfiles/dirs")
-    s.add_argument("--follow-symlinks", action="store_true", help="follow symlinks for stat/is_dir")
-    s.add_argument("--exclude", action="append", default=[], help="exclude glob (repeatable)")
-    s.add_argument("--print", dest="do_print", action="store_true", help="print tree via lsd")
-    return p
-
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
-
-    if args.cmd == "snapshot":
-        root = Path(args.root)
-        out = Path(args.out)
-
-        exclude = list(DEFAULT_EXCLUDES) + list(args.exclude or [])
-        tree = scan_tree(
-            root,
-            max_depth=args.depth,
-            include_hidden=args.include_hidden,
-            follow_symlinks=args.follow_symlinks,
-            exclude_globs=exclude,
-        )
-
-        jsonl = True
-        if args.json:
-            jsonl = False
-        elif args.jsonl:
-            jsonl = True
-
-        meta = {
-            "root": str(root),
-            "options": {
-                "depth": args.depth,
-                "include_hidden": args.include_hidden,
-                "follow_symlinks": args.follow_symlinks,
-                "exclude": exclude,
-            },
-        }
-
-        write_snapshot(tree, out, jsonl=jsonl, meta=meta)
-
-        if args.do_print:
-            print_tree_with_lsd(root, depth=args.depth, include_hidden=args.include_hidden)
-
-        return 0
-
-    return 2
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+assert lsd_data[0]["name"] == pathlib_data[0].name  # Breaks if order differs
 ```
 
-Make sure it is executable in the store template (optional):
-
+**✓ Sort before compare:**
+```python
+lsd_sorted = sorted(lsd_data, key=lambda x: x["name"])
+pathlib_sorted = sorted(pathlib_data, key=lambda x: x.name)
 ```
-chmod +x templates/fileman/.devman/templates/fileman/src/fileman_snapshot.py
+
+**❌ Brittle string matching:**
+```python
+assert output == "exact string"  # Format changes break test
+```
+
+**✓ Semantic extraction:**
+```python
+entry = parse_entry(output)
+assert entry["name"] == "expected"
+```
+
+### Build Anti-Patterns
+
+**❌ Platform-specific hardcoding:**
+```bash
+gcc -shared ...  # Breaks on macOS
+```
+
+**✓ Platform detection:**
+```make
+shared_flag := if os() == "macos" { "-dynamiclib" } else { "-shared" }
 ```
 
 ---
 
-## 3) Add the optional `bin/` shim (only if your store wants it)
-
-If you prefer a repo-local shim outside Nix:
-
-`templates/fileman/.devman/templates/fileman/bin/fileman`
-
-```sh
-#!/usr/bin/env sh
-exec python3 "$(dirname "$0")/../src/fileman_snapshot.py" "$@"
-```
-
-(But the **preferred** entrypoint for Devman usage is the one provided by `devenv.nix`.)
-
----
-
-## 4) Create template-level docs
-
-Ensure these exist (they guide consumers):
-
-- `FILEMAN_CONCEPT.md` (already written)
-- `README.md` (short “how to attach/import/run”)
-- `AGENTS.md` (this file)
-
-**README.md minimal content** should include:
-- how to import:
-  - `imports = [ ./.devman/fileman/nix/fileman.devenv.nix ];`
-- how to run:
-  - `import ".devman/fileman/just/fileman.just"`
-  - `just fileman:snapshot`
-
----
-
-## 5) Validation steps (must run)
-
-### 5.1 Validate in a repo with `.devman` link present
-From the repo root:
-
-1) Ensure devenv includes Fileman:
-
-```nix
-# devenv.nix (consumer repo)
-{ pkgs, ... }: {
-  imports = [
-    ./.devman/fileman/nix/fileman.devenv.nix
-  ];
-}
-```
-
-2) Ensure Justfile imports recipes:
+## Justfile Quick Reference
 
 ```make
-import ".devman/fileman/just/fileman.just"
+# Grammar operations
+just grammar-generate LANG    # Run tree-sitter generate
+just grammar-compile LANG     # Compile to .so/.dylib
+just grammar-test LANG        # Run corpus tests
+
+# Wrapper operations
+just wrapper-generate LANG    # Create uv script
+
+# Testing
+just test-unit                # pytest unit tests
+just test-correctness         # Integration tests
+just test-all                 # Everything
+
+# Development
+just lsd-parse PATH           # Parse directory with lsd -> lsd-json
+just clean                    # Remove build artifacts
+just rebuild-all              # Clean + full rebuild
 ```
-
-3) Run:
-
-```sh
-just fileman:snapshot
-```
-
-Expected:
-- terminal prints `lsd --tree` output
-- snapshot written to `.devman/out/fileman/snapshot.jsonl`
-- last line includes `DEV_MAN_ARTIFACT: .devman/out/fileman/snapshot.jsonl`
-
-### 5.2 Quick sanity checks on output
-- JSONL file contains exactly **one line**
-- The JSON includes:
-  - `schema: fileman.snapshot.v1`
-  - `generated_at`
-  - `tree.type == "dir"`
-  - `options.exclude` includes `.devman`
 
 ---
 
-## 6) Quality & Devman constraints checklist
+## MVP Acceptance Criteria
 
-- ✅ **Just-first**: primary interface is `just fileman:snapshot`
-- ✅ **Store-owned artifacts**: writes only under `.devman/out/fileman/…`
-- ✅ **Symlink-friendly**: never traverses `.devman/` by default
-- ✅ **Safe-by-default**: no destructive operations; simulate mode supported
-- ✅ **Idempotent**: re-running overwrites snapshot file
-- ✅ **Composable**: imported `devenv.nix` module + just fragment
+### Grammar
+
+- [ ] Parses `lsd --long` without ERROR nodes
+- [ ] Extracts permissions, size, name fields
+- [ ] Handles symlinks with `->` notation
+- [ ] Corpus tests cover edge cases
+- [ ] `just grammar-test lsd` passes
+
+### Wrapper
+
+- [ ] Loads compiled grammar successfully
+- [ ] Reads stdin, emits valid JSON
+- [ ] `--pretty`, `--include-text`, `--max-text` flags work
+- [ ] Exit codes correct (0 success, 2 errors)
+
+### Testing
+
+- [ ] Generates test filesystem (dirs, files, symlinks)
+- [ ] Extracts pathlib ground truth
+- [ ] Runs lsd → lsd-json pipeline
+- [ ] Compares outputs, reports mismatches
+- [ ] >95% accuracy on 100 generated files
+- [ ] `just test-correctness` passes
+
+### Build
+
+- [ ] `devenv shell` builds project
+- [ ] `just grammar-compile lsd` produces .so/.dylib
+- [ ] Platform detection works (Linux/macOS)
+- [ ] Clean build from scratch <30 seconds
 
 ---
 
-## 7) Optional enhancements (only after minimal passes)
+## Corpus Test Format
 
-Keep these behind flags to preserve speed:
+```
+==================
+Test case name
+==================
 
-- `--sort name` for deterministic tree ordering (slower)
-- `--hash` to add file hashes (expensive; off by default)
-- `--stream` JSONL mode to emit one record per node (no full tree in memory)
-- include `git` context: current commit, dirty flag (cheap)
+Input text
+Exactly as it appears in CLI output
 
+---
+
+(expected_ast
+  (node_type
+    (child_node)))
+```
+
+**Critical:**
+- Exactly 18 equals signs
+- Two blank lines before test name
+- Input ends at `---` line
+- AST uses S-expression syntax
+- Indentation matters for nested nodes
+
+---
+
+## Key Questions Before Starting
+
+### Grammar Development
+
+1. What is exact format being parsed? (get sample output)
+2. What CLI flags are in scope?
+3. What fields need extraction?
+4. What is ground truth source for validation?
+
+### During Development
+
+1. Do corpus tests cover all grammar branches?
+2. Are ERROR nodes appearing?
+3. Does grammar handle whitespace explicitly?
+4. Are field boundaries unambiguous?
+
+### Before Declaring Complete
+
+1. Does grammar parse 100% of test cases without ERROR?
+2. Do tests achieve >95% accuracy?
+3. Can someone clone and build without help?
+4. Are acceptance criteria met?
+
+---
+
+## Success Criteria
+
+**You're done when:**
+- Grammar parses target format cleanly (no ERROR nodes)
+- `just test-correctness` passes
+- Fresh `devenv shell` builds everything
+- False positive/negative rate <5%
+- Documentation complete
+
+**You're NOT done when:**
+- Grammar "mostly works" (ERROR nodes present)
+- Tests pass on toy examples but fail on real data
+- Build requires manual steps
+- Performance poor (>1s for 100 lines)
+
+---
+
+## Environment Setup
+
+**devenv.nix provides:**
+- tree-sitter (grammar generation)
+- gcc/clang (compilation)
+- python312 + uv
+- just (task runner)
+- lsd (target CLI)
+
+**No manual installs needed.** All deps in devenv packages.
+
+---
+
+## References
+
+### Documentation
+
+- Tree-sitter: https://tree-sitter.github.io/tree-sitter/
+- Justfile: https://just.systems/man/en/
+- devenv.sh: https://devenv.sh/
+
+### Example Grammars
+
+- tree-sitter-json (simple, clean)
+- tree-sitter-bash (complex, handles ambiguity)
+
+### Project Files
+
+- `CONCEPT_MVP_LSD.md` - Full specification
+- `grammars/tree-sitter-lsd/grammar.js` - Grammar source
+- `Justfile` - Build recipes
+- `tests/test_correctness.py` - Validation logic
