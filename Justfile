@@ -37,7 +37,7 @@ wrapper-generate LANG=lang:
   @echo "TODO: generate wrappers/{{LANG}}-json wrapper script"
 
 test-unit:
-  uv run pytest -q
+  uv run pytest tests/test_python_bootstrap.py -q
 
 test-correctness:
   uv run pytest tests/test_correctness.py -q
