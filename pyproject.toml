@@ -1,0 +1,16 @@
+[project]
+name = "fileman"
+version = "0.1.0"
+description = "Tree-sitter based CLI output parser that converts lsd output into JSON ASTs"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
