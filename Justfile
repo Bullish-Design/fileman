@@ -24,11 +24,11 @@ lang := "lsd"
 default:
   @just --list
 
-grammar-generate LANG=lang:
-  @echo "TODO: generate tree-sitter grammar for {{LANG}}"
+#grammar-generate LANG=lang:
+#  @echo "TODO: generate tree-sitter grammar for {{LANG}}"
 
-grammar-compile LANG=lang:
-  @echo "TODO: compile grammar shared library for {{LANG}} into build/"
+#grammar-compile LANG=lang:
+#  @echo "TODO: compile grammar shared library for {{LANG}} into build/"
 
 grammar-test LANG=lang:
   @echo "TODO: run tree-sitter corpus tests for {{LANG}}"
@@ -51,4 +51,4 @@ clean:
   rm -rf .pytest_cache .ruff_cache test_files
   find build -mindepth 1 ! -name '.gitkeep' -delete
 
-rebuild-all: clean grammar-generate grammar-compile wrapper-generate test-all
+#rebuild-all: clean grammar-generate grammar-compile wrapper-generate test-all
