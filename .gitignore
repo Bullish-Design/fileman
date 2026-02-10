@@ -205,3 +205,13 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Fileman generated artifacts
+build/*
+!build/.gitkeep
+test_files/
+grammars/tree-sitter-*/src/parser.c
+grammars/tree-sitter-*/src/node-types.json
+grammars/tree-sitter-*/src/grammar.json
+grammars/tree-sitter-*/Cargo.toml
+grammars/tree-sitter-*/binding.gyp
