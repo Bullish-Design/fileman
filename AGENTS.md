@@ -2,68 +2,61 @@
 
 ## Project Context
 
-**Purpose:** Build grammar-specific CLI parsers using tree-sitter that emit JSON ASTs. Each parser is a Python uv script wrapping a compiled tree-sitter grammar.
+**Purpose:** Simple wrapper around the `lsd` command that outputs parsed filetree information as JSON.
 
-**MVP Target:** Parse `lsd --long` output, validate against pathlib filesystem queries, establish reusable pattern.
+**MVP Target:** Import pre-built parser, wrap `lsd --long` output, emit JSON structure.
 
-**Key Insight:** tree-sitter CLI is a development tool, not a pipeline component. This fills the gap for production CLI-to-JSON parsers.
+**Key Insight:** Parser is already built and tested elsewhere. We just import it via devenv.yaml and use it - no grammar development needed.
 
 ---
 
-## Repository Structure
+## Repository Structure (Simplified)
 
 ```
-grammars/tree-sitter-<lang>/
-  grammar.js              # Syntax rules - source of truth
-  src/parser.c            # Generated (never edit)
-  test/corpus/*.txt       # Corpus tests
-
-build/
-  <lang>.so / .dylib      # Compiled grammars (gitignored)
-
-wrappers/
-  <lang>-json             # Generated uv scripts
-
-tests/
-  test_correctness.py     # Pytest integration tests
-
 scripts/
-  *.py                    # uv scripts for complex operations
+  lsd-json                # Simple wrapper script
 
-test_files/               # Generated (gitignored)
-
-Justfile                  # Build automation
-devenv.nix                # Environment packages
-pyproject.toml            # Python dependencies
+Justfile                  # Task automation
+devenv.yaml               # Parser import
+devenv.nix                # Package management
+README.md
+CONCEPT_MVP_LSD.md
+AGENTS.md
 ```
+
+**Much simpler!** No grammars/, build/, or wrappers/ directories needed.
 
 ---
 
-## Development Workflow
+## Development Workflow (Simplified)
 
-### Standard Loop
+### Setup
 
 ```bash
-# 1. Edit grammar
-vim grammars/tree-sitter-lsd/grammar.js
+# 1. Enter devenv shell (imports parser automatically)
+devenv shell
 
-# 2. Generate + compile
-just grammar-generate lsd
-just grammar-compile lsd
-
-# 3. Test
-just grammar-test lsd        # Corpus tests
-just test-correctness         # Full integration
-
-# 4. Manual check
-just lsd-parse test_files/
+# 2. Ready to use!
+just lsd-parse /some/path
 ```
 
-### When to Rebuild
+### Usage
 
-**Regenerate (tree-sitter generate):** Modified grammar.js
-**Recompile (gcc):** After regeneration
-**No rebuild:** Wrapper edits, test changes
+```bash
+# Parse current directory
+just lsd-parse
+
+# Parse specific path
+just lsd-parse /tmp
+
+# Get pretty JSON output
+just demo /path
+
+# Validate JSON output
+just test-json-valid
+```
+
+**No build steps!** Parser is pre-built and imported.
 
 ---
 
@@ -71,250 +64,186 @@ just lsd-parse test_files/
 
 Detailed patterns in separate skill documents:
 
-- **`skills/treesitter-grammar.md`** - Grammar DSL, parsing patterns, corpus tests, debugging
-- **`skills/devenv-justfile-integration.md`** - Justfile recipes, platform detection, uv script integration
-- **`skills/cli-parser-validation.md`** - Test strategies, ground truth comparison, fixtures
+- **`.skills/devenv-justfile-integration.md`** - Justfile recipes, devenv configuration
+- **`.skills/cli-parser-validation.md`** - Basic validation strategies
+
+**Note:** No grammar development skills needed for this simplified MVP!
 
 ---
 
-## Common Tasks
+## Common Tasks (Simplified)
 
-### Add New Grammar Rule
+### Test the Wrapper
 
-1. Identify unparsed pattern in sample output
-2. Write corpus test in `test/corpus/*.txt`
-3. Add rule to `grammar.js`
-4. Run `just grammar-test <lang>` - expect failure
-5. Iterate until test passes
-6. Run `just test-correctness` to check regressions
-
-### Debug ERROR Nodes
-
-1. Isolate input: `echo "problematic line" > debug.txt`
-2. Parse: `tree-sitter parse debug.txt`
-3. Identify ERROR location in tree
-4. Check grammar rule at that position
-5. Add explicit whitespace if needed
-6. Add corpus test for the fix
-
-### Add Field Extraction
-
-1. Ensure grammar recognizes field (corpus test)
-2. Test harness will extract from AST automatically
-3. Add normalization if needed (pathlib vs CLI format)
-4. Update comparison assertions
-
----
-
-## Critical Pitfalls
-
-### Grammar Anti-Patterns
-
-**❌ Greedy regex before specific fields:**
-```javascript
-name: $ => /.*/,  // Eats everything, breaks parsing
-```
-
-**✓ Bounded capture:**
-```javascript
-name: $ => /[^\n]+/,  // Stop at newline
-```
-
-**❌ Missing explicit whitespace:**
-```javascript
-file_entry: $ => seq($.user, $.group),  // Fields merge
-```
-
-**✓ Explicit delimiters:**
-```javascript
-file_entry: $ => seq($.user, /\s+/, $.group),
-```
-
-**❌ Wrong choice order:**
-```javascript
-value: $ => choice(/[0-9]+/, /[0-9]+\.[0-9]+/),  // Float never matches
-```
-
-**✓ Specific first:**
-```javascript
-value: $ => choice(/[0-9]+\.[0-9]+/, /[0-9]+/),
-```
-
-### Test Anti-Patterns
-
-**❌ Order-dependent comparison:**
-```python
-assert lsd_data[0]["name"] == pathlib_data[0].name  # Breaks if order differs
-```
-
-**✓ Sort before compare:**
-```python
-lsd_sorted = sorted(lsd_data, key=lambda x: x["name"])
-pathlib_sorted = sorted(pathlib_data, key=lambda x: x.name)
-```
-
-**❌ Brittle string matching:**
-```python
-assert output == "exact string"  # Format changes break test
-```
-
-**✓ Semantic extraction:**
-```python
-entry = parse_entry(output)
-assert entry["name"] == "expected"
-```
-
-### Build Anti-Patterns
-
-**❌ Platform-specific hardcoding:**
 ```bash
-gcc -shared ...  # Breaks on macOS
+# Run on a directory
+just lsd-parse /some/path
+
+# Check JSON is valid
+just test-json-valid /some/path
+
+# Pretty print for inspection
+just demo /some/path
 ```
 
-**✓ Platform detection:**
+### Update the Wrapper Script
+
+If you need to modify output format:
+
+1. Edit `scripts/lsd-json`
+2. Test with `just lsd-parse`
+3. Done!
+
+**No parser/grammar modifications needed** - that's all handled in the imported module.
+
+---
+
+## Common Pitfalls (Simplified)
+
+### Wrapper Script Issues
+
+**❌ Not handling lsd errors:**
+```python
+result = subprocess.run(["lsd", "--long", path])  # Doesn't check for errors
+```
+
+**✓ Check return codes:**
+```python
+result = subprocess.run(["lsd", "--long", path], check=True)
+```
+
+**❌ Invalid JSON output:**
+```python
+print("entries:", json_data)  # Extra text breaks JSON
+```
+
+**✓ Clean JSON only:**
+```python
+print(json.dumps(json_data))  # Pure JSON output
+```
+
+### devenv Configuration
+
+**❌ Missing parser import:**
+```yaml
+# imports not specified
+```
+
+**✓ Specify imports:**
+```yaml
+imports:
+  - path/to/lsd-parser
+```
+
+---
+
+## Justfile Quick Reference (Simplified)
+
 ```make
-shared_flag := if os() == "macos" { "-dynamiclib" } else { "-shared" }
+# Usage commands
+just lsd-parse PATH           # Parse directory with lsd
+just demo PATH                # Pretty print JSON output
+just test-json-valid PATH     # Validate JSON output
+
+# That's it! No build commands needed.
 ```
 
 ---
 
-## Justfile Quick Reference
+## MVP Acceptance Criteria (Simplified)
 
-```make
-# Grammar operations
-just grammar-generate LANG    # Run tree-sitter generate
-just grammar-compile LANG     # Compile to .so/.dylib
-just grammar-test LANG        # Run corpus tests
+### Setup
 
-# Wrapper operations
-just wrapper-generate LANG    # Create uv script
+- [ ] devenv.yaml imports parser successfully
+- [ ] `devenv shell` loads without errors
+- [ ] `lsd-json` command is available in shell
 
-# Testing
-just test-unit                # pytest unit tests
-just test-correctness         # Integration tests
-just test-all                 # Everything
+### Functionality
 
-# Development
-just lsd-parse PATH           # Parse directory with lsd -> lsd-json
-just clean                    # Remove build artifacts
-just rebuild-all              # Clean + full rebuild
-```
+- [ ] Wrapper executes lsd and captures output
+- [ ] Parser produces valid JSON
+- [ ] JSON structure contains file entries
+- [ ] Handles directories, files, and symlinks
 
----
+### Usage
 
-## MVP Acceptance Criteria
-
-### Grammar
-
-- [ ] Parses `lsd --long` without ERROR nodes
-- [ ] Extracts permissions, size, name fields
-- [ ] Handles symlinks with `->` notation
-- [ ] Corpus tests cover edge cases
-- [ ] `just grammar-test lsd` passes
-
-### Wrapper
-
-- [ ] Loads compiled grammar successfully
-- [ ] Reads stdin, emits valid JSON
-- [ ] `--pretty`, `--include-text`, `--max-text` flags work
-- [ ] Exit codes correct (0 success, 2 errors)
-
-### Testing
-
-- [ ] Generates test filesystem (dirs, files, symlinks)
-- [ ] Extracts pathlib ground truth
-- [ ] Runs lsd → lsd-json pipeline
-- [ ] Compares outputs, reports mismatches
-- [ ] >95% accuracy on 100 generated files
-- [ ] `just test-correctness` passes
-
-### Build
-
-- [ ] `devenv shell` builds project
-- [ ] `just grammar-compile lsd` produces .so/.dylib
-- [ ] Platform detection works (Linux/macOS)
-- [ ] Clean build from scratch <30 seconds
+- [ ] `just lsd-parse /path` works on real directories
+- [ ] JSON output can be piped to `jq`
+- [ ] No manual configuration needed
+- [ ] Works immediately after entering devenv shell
 
 ---
 
-## Corpus Test Format
+## Testing (Simplified)
 
+Manual testing is sufficient for the MVP:
+
+```bash
+# Test on various directories
+just lsd-parse /tmp
+just lsd-parse /home/user
+just lsd-parse .
+
+# Verify JSON is valid
+just test-json-valid /path
+
+# Inspect output
+just demo /path | jq .
 ```
-==================
-Test case name
-==================
 
-Input text
-Exactly as it appears in CLI output
-
----
-
-(expected_ast
-  (node_type
-    (child_node)))
-```
-
-**Critical:**
-- Exactly 18 equals signs
-- Two blank lines before test name
-- Input ends at `---` line
-- AST uses S-expression syntax
-- Indentation matters for nested nodes
+**No corpus tests needed** - parser is pre-tested!
 
 ---
 
 ## Key Questions Before Starting
 
-### Grammar Development
+### Setup Questions
 
-1. What is exact format being parsed? (get sample output)
-2. What CLI flags are in scope?
-3. What fields need extraction?
-4. What is ground truth source for validation?
+1. Is the parser import path correct in devenv.yaml?
+2. Does `devenv shell` load successfully?
+3. Is `lsd` command available?
 
-### During Development
+### Implementation Questions
 
-1. Do corpus tests cover all grammar branches?
-2. Are ERROR nodes appearing?
-3. Does grammar handle whitespace explicitly?
-4. Are field boundaries unambiguous?
+1. Does the wrapper script execute lsd correctly?
+2. Is the imported parser being called properly?
+3. Does the JSON output have the right structure?
 
 ### Before Declaring Complete
 
-1. Does grammar parse 100% of test cases without ERROR?
-2. Do tests achieve >95% accuracy?
-3. Can someone clone and build without help?
-4. Are acceptance criteria met?
+1. Does `just lsd-parse /path` work on real directories?
+2. Is the JSON output valid (test with `jq`)?
+3. Are acceptance criteria met?
 
 ---
 
-## Success Criteria
+## Success Criteria (Simplified)
 
 **You're done when:**
-- Grammar parses target format cleanly (no ERROR nodes)
-- `just test-correctness` passes
-- Fresh `devenv shell` builds everything
-- False positive/negative rate <5%
-- Documentation complete
+- `devenv shell` loads with imported parser
+- `just lsd-parse /path` produces valid JSON
+- Output can be piped to `jq` successfully
+- Works on real directories without errors
 
 **You're NOT done when:**
-- Grammar "mostly works" (ERROR nodes present)
-- Tests pass on toy examples but fail on real data
-- Build requires manual steps
-- Performance poor (>1s for 100 lines)
+- Parser import fails
+- Wrapper script produces invalid JSON
+- lsd command execution fails
+- devenv shell has errors
 
 ---
 
-## Environment Setup
+## Environment Setup (Simplified)
+
+**devenv.yaml provides:**
+- Parser import (pre-built, ready to use)
 
 **devenv.nix provides:**
-- tree-sitter (grammar generation)
-- gcc/clang (compilation)
-- python312 + uv
+- lsd (CLI tool)
+- python312 + uv (for wrapper script)
 - just (task runner)
-- lsd (target CLI)
 
-**No manual installs needed.** All deps in devenv packages.
+**No manual installs or builds needed!** Everything is pre-configured.
 
 ---
 
@@ -322,18 +251,16 @@ Exactly as it appears in CLI output
 
 ### Documentation
 
-- Tree-sitter: https://tree-sitter.github.io/tree-sitter/
 - Justfile: https://just.systems/man/en/
 - devenv.sh: https://devenv.sh/
-
-### Example Grammars
-
-- tree-sitter-json (simple, clean)
-- tree-sitter-bash (complex, handles ambiguity)
+- lsd: https://github.com/lsd-rs/lsd
 
 ### Project Files
 
-- `CONCEPT_MVP_LSD.md` - Full specification
-- `grammars/tree-sitter-lsd/grammar.js` - Grammar source
-- `Justfile` - Build recipes
-- `tests/test_correctness.py` - Validation logic
+- `CONCEPT_MVP_LSD.md` - MVP specification
+- `Justfile` - Task automation
+- `devenv.yaml` - Parser import configuration
+- `devenv.nix` - Package management
+- `scripts/lsd-json` - Wrapper script
+
+**Note:** No grammar or tree-sitter documentation needed for this simplified MVP!
