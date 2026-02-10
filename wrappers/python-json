@@ -17,8 +17,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from tree_sitter import Language, Parser
-
 EXIT_ERROR = 2
 
 
@@ -43,7 +41,18 @@ def resolve_library_path() -> Path:
     return Path(__file__).resolve().parent.parent / "build" / f"python.{ext}"
 
 
-def load_language(lib_path: Path) -> Language:
+def load_tree_sitter_classes() -> tuple[Any, Any]:
+    try:
+        from tree_sitter import Language, Parser
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("tree-sitter Python package is required; run via uv script or install dependency") from exc
+
+    return Language, Parser
+
+
+def load_language(lib_path: Path) -> Any:
+    Language, _ = load_tree_sitter_classes()
+
     if not lib_path.exists():
         raise FileNotFoundError(f"grammar shared library not found: {lib_path}")
 
@@ -98,6 +107,7 @@ def main() -> int:
     args = parse_args()
 
     try:
+        _, Parser = load_tree_sitter_classes()
         language = load_language(resolve_library_path())
         parser = Parser()
         if hasattr(parser, "set_language"):
