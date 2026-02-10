@@ -1,6 +1,7 @@
 { pkgs, ... }:
 {
-  env.TREESITTER_PARSER_PATH = "";
+  env.TREESITTER_PARSER_PATH = "/home/andrew/Documents/Projects/grammatic/build/python/python.so";
+  env.LOCAL_PARSER_PATH = "./.devman/.grammatic/python.so";
 
   packages = with pkgs; [
     just
@@ -12,6 +13,8 @@
   ];
 
   scripts.fileman-help.exec = ''
+    echo
+    echo
     echo "Fileman development shell"
     echo "- just test-correctness"
     echo "- just lsd-parse <path>"
@@ -42,6 +45,11 @@
   '';
 
   enterShell = ''
-    link-treesitter-parser "$TREESITTER_PARSER_PATH" "./vendor/parser/tree-sitter-lsd.so" || true
+    fileman-help
+    echo
+    echo
+    link-treesitter-parser "$TREESITTER_PARSER_PATH" "$LOCAL_PARSER_PATH" || true
+    echo
+    echo
   '';
 }
