@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Baseline lsd->JSON wrapper placeholder."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Convert lsd --long output into JSON")
+    parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    lines = [line for line in sys.stdin.read().splitlines() if line.strip()]
+    payload = {"lines": lines}
+    if args.pretty:
+        json.dump(payload, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+    else:
+        json.dump(payload, sys.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
