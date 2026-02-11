@@ -1,535 +1,357 @@
-# AGENTS.md — Build Fileman from scratch (Devman component library)
+# AGENTS.md
 
-This doc is written for an automation/agent that needs to create **Fileman** end-to-end as a **Devman template component library**.
+## Project Context
 
-**Read first (required):**
-1) `DEVMAN_CORE_CONCEPTS.md` (Devman first principles, store/instance/symlink/run model)
-2) `FILEMAN_CONCEPT.md` (Fileman’s goals, layout, CLI shape, devenv/just patterns)
+**Purpose:** Simple Python library that recursively scans directories, parses file metadata into Pydantic objects, and outputs structured JSON.
 
----
+**MVP Target:** Use pathlib to walk directories, capture file/directory metadata (name, type, size, permissions, timestamps), structure with Pydantic, emit JSON.
 
-## 0) Success criteria (Definition of Done)
-
-You are done when all of these are true:
-
-- `fileman snapshot`:
-  - scans a repo root
-  - writes **one JSON snapshot object** to a file (JSON or JSONL)
-  - prints a clean terminal tree (via `lsd --tree`) when `--print` is set
-- The **default output path** is under `.devman/out/fileman/…`
-- The `just` recipe:
-  - is **idempotent**
-  - prints an artifact marker line `DEV_MAN_ARTIFACT: <path>`
-  - supports Devman’s “run model” expectations (writes outputs to `.devman/out/…`)
-- `nix/fileman.devenv.nix` is **importable** by other Devman libraries/repos (`imports = [ ./.devman/fileman/nix/fileman.devenv.nix ];`)
-- The template payload follows Devman’s **store + instance + symlink semantics** (no repo-local state outside `.devman/out/…`)
+**Key Insight:** No external parsers or CLI tools needed - Python's pathlib and standard library handle everything.
 
 ---
 
-## 1) Create the Devman template skeleton
-
-Devman’s canonical store layout is:
+## Repository Structure
 
 ```
-<DEV_MAN_STORE>/
-  templates/
-    fileman/
-      .devman/
-        templates/
-          fileman/
-            ...payload...
-      manifest.toml
+scripts/
+  fileman                   # Main UV script
+
+devenv.nix                  # Package management (python, uv, just)
+Justfile                    # Task automation
+README.md
+CONCEPT_MVP_LSD.md
+AGENTS.md
 ```
 
-Create this folder structure:
-
-```
-templates/fileman/
-  .devman/templates/fileman/
-    nix/
-    just/
-    bin/
-    src/
-  manifest.toml
-  .gitignore
-  README.md
-  FILEMAN_CONCEPT.md
-  AGENTS.md
-```
-
-### 1.1 manifest.toml (minimal)
-You don’t have the full manifest schema here. Keep it minimal and consistent with other templates in the same store.
-
-Suggested minimal shape (adjust keys to match your Devman implementation):
-
-```toml
-name = "fileman"
-version = "0.1.0"
-type = "component-library"
-description = "Minimal lsd wrapper to snapshot repo filesystem -> JSON/JSONL and print tree"
-```
-
-If your store requires additional fields (entry points, hooks, links), copy the pattern from an existing template in the store.
-
-### 1.2 .gitignore (template repo only)
-If Fileman itself lives in git (not required), ignore outputs:
-
-```
-.devman/out/
-```
+**Dead simple!** One script, standard library only.
 
 ---
 
-## 2) Implement the Fileman payload
+## Development Workflow
 
-All runtime bits belong inside:
+### Setup
 
-```
-templates/fileman/.devman/templates/fileman/
-```
+```bash
+# 1. Enter devenv shell
+devenv shell
 
-### 2.1 Importable devenv module: `nix/fileman.devenv.nix`
-
-Create:
-
-`templates/fileman/.devman/templates/fileman/nix/fileman.devenv.nix`
-
-Use `lsd`, and a Python env with `pydantic` (and nothing else).
-
-```nix
-{ pkgs, ... }:
-let
-  py = pkgs.python3.withPackages (ps: [ ps.pydantic ]);
-
-  fileman = pkgs.writeShellApplication {
-    name = "fileman";
-    runtimeInputs = [ py pkgs.lsd ];
-    text = ''
-      # Expect to run inside a repo that has .devman -> instance symlink.
-      exec python3 ./.devman/fileman/src/fileman_snapshot.py "$@"
-    '';
-  };
-in
-{
-  packages = [
-    pkgs.lsd
-    py
-    fileman
-  ];
-}
+# 2. Ready to use!
+just scan /some/path
 ```
 
-Notes:
-- Keep this module **import-only**: it should not assume anything besides `.devman/fileman/...` being present.
-- `fileman_snapshot.py` lives in the instance, so the relative path is stable.
+### Usage
+
+```bash
+# Scan current directory
+just scan
+
+# Scan specific path and save JSON
+just scan /tmp
+
+# Read and display saved JSON
+just list
+
+# Show files with details
+just show
+```
+
+**No build steps, no external dependencies beyond Python!**
 
 ---
 
-### 2.2 Just recipes: `just/fileman.just`
+## Essential Skills
 
-Create:
+Detailed patterns in separate skill documents:
 
-`templates/fileman/.devman/templates/fileman/just/fileman.just`
-
-Goals:
-- single primary recipe: `fileman:snapshot`
-- write artifacts to `.devman/out/fileman`
-- print `DEV_MAN_ARTIFACT: <path>` so Devman can capture it
-
-```make
-# fileman.just — import from a repo's Justfile
-# Usage:
-#   import ".devman/fileman/just/fileman.just"
-#
-# Then run:
-#   just fileman:snapshot
-
-fileman:snapshot root="." out=".devman/out/fileman/snapshot.jsonl" depth="" include_hidden="false":
-  mkdir -p .devman/out/fileman
-
-  if [ "${DEV_MAN_SIMULATE:-0}" = "1" ]; then     echo "[simulate] would run fileman snapshot --root {{root}} --out {{out}} --jsonl";     echo "DEV_MAN_ARTIFACT: {{out}}";     exit 0;   fi
-
-  EXTRA=""
-  if [ -n "{{depth}}" ]; then EXTRA="$EXTRA --depth {{depth}}"; fi
-  if [ "{{include_hidden}}" = "true" ]; then EXTRA="$EXTRA --include-hidden"; fi
-
-  fileman snapshot --root "{{root}}" --out "{{out}}" --jsonl --print $EXTRA
-
-  echo "DEV_MAN_ARTIFACT: {{out}}"
-```
+- **`.skills/pathlib-patterns.md`** - Recursive directory scanning, file metadata extraction
+- **`.skills/pydantic-models.md`** - Data structure patterns for file entries
+- **`.skills/devenv-justfile-integration.md`** - Justfile recipes, devenv configuration
 
 ---
 
-### 2.3 CLI entrypoint script: `src/fileman_snapshot.py`
+## Common Tasks
 
-Create:
+### Run the Scanner
 
-`templates/fileman/.devman/templates/fileman/src/fileman_snapshot.py`
+```bash
+# Scan directory and output JSON
+just scan /some/path
 
-Requirements:
-- fast scan via `os.scandir()`
-- default excludes include **`.devman`** and `.git`
-- write a **single JSON object** (JSONL: one line)
-- print tree using `lsd` (not your own tree renderer)
+# Read back saved JSON
+just list
 
-**Minimal implementation (copy/paste):**
+# Show with pretty formatting
+just show /some/path
+```
 
+### Update the Script
+
+If you need to modify output format or add fields:
+
+1. Edit Pydantic models in `scripts/fileman`
+2. Update scanning logic
+3. Test with `just scan`
+4. Done!
+
+---
+
+## Common Pitfalls
+
+### Path Handling Issues
+
+**❌ Not handling permission errors:**
 ```python
-#!/usr/bin/env python3
+for item in path.iterdir():  # Crashes on permission denied
+    process(item)
+```
+
+**✓ Handle errors gracefully:**
+```python
+try:
+    for item in path.iterdir():
+        process(item)
+except PermissionError:
+    continue
+```
+
+**❌ Not resolving symlinks:**
+```python
+path.stat()  # Follows symlinks implicitly
+```
+
+**✓ Check if symlink first:**
+```python
+if path.is_symlink():
+    target = path.readlink()
+else:
+    stat = path.stat()
+```
+
+### Pydantic Model Issues
+
+**❌ Missing validation:**
+```python
+class Entry(BaseModel):
+    name: str
+    size: int  # Negative sizes not handled
+```
+
+**✓ Add validation:**
+```python
+class Entry(BaseModel):
+    name: str
+    size: int = Field(ge=0)
+```
+
+**❌ Circular references in recursive structures:**
+```python
+class Entry(BaseModel):
+    children: list[Entry]  # Not defined yet
+```
+
+**✓ Use forward references:**
+```python
 from __future__ import annotations
 
-import argparse
-import fnmatch
-import json
-import os
-import subprocess
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import List, Optional, Sequence, Tuple, Union
+class Entry(BaseModel):
+    children: list[Entry] = []
+```
 
-from pydantic import BaseModel, Field
+---
 
+## Justfile Quick Reference
 
-# -----------------
-# Models
-# -----------------
+```make
+# Usage commands
+just scan PATH              # Scan directory and save JSON
+just list                   # Display saved JSON entries
+just show PATH              # Pretty print with details
 
-class Node(BaseModel):
-    type: str
-    name: str
-    relpath: str
-    mode: int
-    uid: int
-    gid: int
-    mtime_ns: int
-    inode: int
-    dev: int
+# Development
+just test                   # Run validation tests
+```
 
+---
 
-class FileNode(Node):
-    type: str = Field(default="file")
-    size: int
+## MVP Acceptance Criteria
 
+### Setup
 
-class SymlinkNode(Node):
-    type: str = Field(default="symlink")
-    target: str
+- [ ] devenv shell loads without errors
+- [ ] `fileman` script is executable
+- [ ] UV dependencies load correctly
 
+### Functionality
 
-class DirNode(Node):
-    type: str = Field(default="dir")
-    children: List[Node] = Field(default_factory=list)
+- [ ] Script recursively scans directories
+- [ ] Captures file metadata (name, type, size, permissions, timestamps)
+- [ ] Produces valid Pydantic models
+- [ ] Outputs valid JSON
+- [ ] Handles files, directories, and symlinks
+- [ ] Handles permission errors gracefully
 
+### Usage
 
-AnyNode = Union[FileNode, SymlinkNode, DirNode]
+- [ ] `just scan /path` works on real directories
+- [ ] JSON output is valid and well-formed
+- [ ] Can read back and display JSON data
+- [ ] Output includes all required fields
 
+---
 
-# -----------------
-# Scan options
-# -----------------
+## Testing
 
-DEFAULT_EXCLUDES: Tuple[str, ...] = (
-    ".git",
-    ".jj",
-    ".hg",
-    ".svn",
-    ".devman",
-    "node_modules",
-    "__pycache__",
-    ".venv",
-    "target",
-    "dist",
-    "build",
-)
+Manual testing for MVP:
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+```bash
+# Test on various directories
+just scan /tmp
+just scan /home/user
+just scan .
 
-def is_hidden(name: str) -> bool:
-    return name.startswith(".")
+# Verify JSON structure
+just scan . && cat filetree.json | jq .
 
-def excluded(name: str, relpath: str, patterns: Sequence[str]) -> bool:
-    for pat in patterns:
-        if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(relpath, pat):
-            return True
-    return False
+# Test reading back
+just list
+```
 
-def relpath(root: Path, p: Path) -> str:
-    # Portable snapshot paths
-    return str(p.relative_to(root)).replace(os.sep, "/")
+**Use real directories to verify:**
+- Proper recursive scanning
+- Symlink handling
+- Permission error handling
+- Large directory performance
 
-def scan_tree(
-    root: Path,
-    *,
-    max_depth: Optional[int],
-    include_hidden: bool,
-    follow_symlinks: bool,
-    exclude_globs: Sequence[str],
-) -> DirNode:
-    root = root.resolve()
-    st = root.stat()
+---
 
-    root_node = DirNode(
-        name=".",
-        relpath=".",
-        mode=st.st_mode,
-        uid=getattr(st, "st_uid", 0),
-        gid=getattr(st, "st_gid", 0),
-        mtime_ns=st.st_mtime_ns,
-        inode=getattr(st, "st_ino", 0),
-        dev=getattr(st, "st_dev", 0),
-        children=[],
-    )
+## Key Questions Before Starting
 
-    stack: List[Tuple[Path, DirNode, int]] = [(root, root_node, 0)]
+### Setup Questions
 
-    while stack:
-        dpath, dnode, depth = stack.pop()
-        if max_depth is not None and depth >= max_depth:
-            continue
+1. Does `devenv shell` load successfully?
+2. Is Python 3.12+ available?
+3. Is UV configured correctly?
 
-        try:
-            with os.scandir(dpath) as it:
-                for e in it:
-                    name = e.name
-                    if not include_hidden and is_hidden(name):
-                        continue
+### Implementation Questions
 
-                    p = Path(e.path)
-                    rp = relpath(root, p)
+1. Does pathlib recursively scan directories?
+2. Are file stats captured correctly?
+3. Do Pydantic models validate properly?
+4. Is JSON output well-formed?
 
-                    if excluded(name, rp, exclude_globs):
-                        continue
+### Before Declaring Complete
 
-                    try:
-                        st = e.stat(follow_symlinks=follow_symlinks)
-                    except OSError:
-                        continue
+1. Does `just scan /path` work on real directories?
+2. Is the JSON output valid (test with `jq`)?
+3. Can you read back and display the data?
+4. Are acceptance criteria met?
 
-                    base = dict(
-                        name=name,
-                        relpath=rp,
-                        mode=st.st_mode,
-                        uid=getattr(st, "st_uid", 0),
-                        gid=getattr(st, "st_gid", 0),
-                        mtime_ns=st.st_mtime_ns,
-                        inode=getattr(st, "st_ino", 0),
-                        dev=getattr(st, "st_dev", 0),
-                    )
+---
 
-                    if e.is_symlink():
-                        try:
-                            target = os.readlink(e.path)
-                        except OSError:
-                            target = ""
-                        dnode.children.append(SymlinkNode(**base, target=target))
-                        continue
+## Success Criteria
 
-                    if e.is_dir(follow_symlinks=follow_symlinks):
-                        child = DirNode(**base, children=[])
-                        dnode.children.append(child)
-                        stack.append((p, child, depth + 1))
-                    else:
-                        dnode.children.append(FileNode(**base, size=st.st_size))
-        except OSError:
-            continue
+**You're done when:**
+- `devenv shell` loads successfully
+- `just scan /path` produces valid JSON
+- Output contains all file metadata
+- Can read back and display entries
+- Handles edge cases (symlinks, permissions)
 
-    return root_node
+**You're NOT done when:**
+- Script crashes on permission errors
+- JSON is malformed
+- Missing required metadata fields
+- Can't handle symlinks correctly
 
-def write_snapshot(tree: DirNode, out: Path, *, jsonl: bool, meta: dict) -> None:
-    payload = {
-        "schema": "fileman.snapshot.v1",
-        "generated_at": now_iso(),
-        **meta,
-        "tree": tree.model_dump(),
+---
+
+## Environment Setup
+
+**devenv.nix provides:**
+- python312 + uv (for script execution)
+- just (task runner)
+- jq (for JSON validation)
+
+**No external tools or parsers needed!** Pure Python stdlib + Pydantic.
+
+---
+
+## Data Structure
+
+### Target Output Format
+
+```json
+{
+  "root": "/path/to/scan",
+  "scanned_at": "2025-02-10T10:30:45",
+  "entries": [
+    {
+      "path": "/path/to/file.txt",
+      "name": "file.txt",
+      "type": "file",
+      "size": 1234,
+      "permissions": "rw-r--r--",
+      "modified": "2025-02-10T09:15:30",
+      "extension": ".txt"
+    },
+    {
+      "path": "/path/to/directory",
+      "name": "directory",
+      "type": "directory",
+      "size": 4096,
+      "permissions": "rwxr-xr-x",
+      "modified": "2025-02-10T09:10:00"
+    },
+    {
+      "path": "/path/to/link",
+      "name": "link",
+      "type": "symlink",
+      "target": "/target/path",
+      "permissions": "rwxrwxrwx",
+      "modified": "2025-02-10T09:20:15"
     }
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", encoding="utf-8") as f:
-        if jsonl:
-            f.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-            f.write("\n")
-        else:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-
-def print_tree_with_lsd(root: Path, *, depth: Optional[int], include_hidden: bool) -> None:
-    cmd = ["lsd", "--tree", "--icon", "never", "--ignore-config"]
-    # Prefer no-color when possible; `lsd` flag support can vary by build.
-    # NO_COLOR is widely recognized; `lsd` also respects config when not ignored.
-    env = dict(os.environ)
-    env["NO_COLOR"] = "1"
-
-    if include_hidden:
-        cmd.append("-a")
-    if depth is not None:
-        cmd += ["--depth", str(depth)]
-
-    cmd.append(str(root))
-
-    subprocess.run(cmd, env=env, check=False)
-
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="fileman")
-    sub = p.add_subparsers(dest="cmd", required=True)
-
-    s = sub.add_parser("snapshot", help="snapshot repo filesystem -> JSON/JSONL; optionally print tree")
-    s.add_argument("--root", default=".", help="repo root (default: .)")
-    s.add_argument("--out", default=".devman/out/fileman/snapshot.jsonl", help="output file path")
-    fmt = s.add_mutually_exclusive_group()
-    fmt.add_argument("--jsonl", action="store_true", help="write compact JSONL (one JSON object per line)")
-    fmt.add_argument("--json", action="store_true", help="write pretty JSON")
-    s.add_argument("--depth", type=int, default=None, help="max depth (default: unlimited)")
-    s.add_argument("--include-hidden", action="store_true", help="include dotfiles/dirs")
-    s.add_argument("--follow-symlinks", action="store_true", help="follow symlinks for stat/is_dir")
-    s.add_argument("--exclude", action="append", default=[], help="exclude glob (repeatable)")
-    s.add_argument("--print", dest="do_print", action="store_true", help="print tree via lsd")
-    return p
-
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
-
-    if args.cmd == "snapshot":
-        root = Path(args.root)
-        out = Path(args.out)
-
-        exclude = list(DEFAULT_EXCLUDES) + list(args.exclude or [])
-        tree = scan_tree(
-            root,
-            max_depth=args.depth,
-            include_hidden=args.include_hidden,
-            follow_symlinks=args.follow_symlinks,
-            exclude_globs=exclude,
-        )
-
-        jsonl = True
-        if args.json:
-            jsonl = False
-        elif args.jsonl:
-            jsonl = True
-
-        meta = {
-            "root": str(root),
-            "options": {
-                "depth": args.depth,
-                "include_hidden": args.include_hidden,
-                "follow_symlinks": args.follow_symlinks,
-                "exclude": exclude,
-            },
-        }
-
-        write_snapshot(tree, out, jsonl=jsonl, meta=meta)
-
-        if args.do_print:
-            print_tree_with_lsd(root, depth=args.depth, include_hidden=args.include_hidden)
-
-        return 0
-
-    return 2
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-```
-
-Make sure it is executable in the store template (optional):
-
-```
-chmod +x templates/fileman/.devman/templates/fileman/src/fileman_snapshot.py
-```
-
----
-
-## 3) Add the optional `bin/` shim (only if your store wants it)
-
-If you prefer a repo-local shim outside Nix:
-
-`templates/fileman/.devman/templates/fileman/bin/fileman`
-
-```sh
-#!/usr/bin/env sh
-exec python3 "$(dirname "$0")/../src/fileman_snapshot.py" "$@"
-```
-
-(But the **preferred** entrypoint for Devman usage is the one provided by `devenv.nix`.)
-
----
-
-## 4) Create template-level docs
-
-Ensure these exist (they guide consumers):
-
-- `FILEMAN_CONCEPT.md` (already written)
-- `README.md` (short “how to attach/import/run”)
-- `AGENTS.md` (this file)
-
-**README.md minimal content** should include:
-- how to import:
-  - `imports = [ ./.devman/fileman/nix/fileman.devenv.nix ];`
-- how to run:
-  - `import ".devman/fileman/just/fileman.just"`
-  - `just fileman:snapshot`
-
----
-
-## 5) Validation steps (must run)
-
-### 5.1 Validate in a repo with `.devman` link present
-From the repo root:
-
-1) Ensure devenv includes Fileman:
-
-```nix
-# devenv.nix (consumer repo)
-{ pkgs, ... }: {
-  imports = [
-    ./.devman/fileman/nix/fileman.devenv.nix
-  ];
+  ]
 }
 ```
 
-2) Ensure Justfile imports recipes:
+### Pydantic Model Pattern
 
-```make
-import ".devman/fileman/just/fileman.just"
+```python
+from __future__ import annotations
+from pydantic import BaseModel, Field
+from pathlib import Path
+from datetime import datetime
+
+class FileEntry(BaseModel):
+    path: str
+    name: str
+    type: str = Field(pattern="^(file|directory|symlink)$")
+    size: int = Field(ge=0)
+    permissions: str
+    modified: datetime
+    extension: str | None = None
+    target: str | None = None  # For symlinks
+
+class FileTree(BaseModel):
+    root: str
+    scanned_at: datetime
+    entries: list[FileEntry]
 ```
-
-3) Run:
-
-```sh
-just fileman:snapshot
-```
-
-Expected:
-- terminal prints `lsd --tree` output
-- snapshot written to `.devman/out/fileman/snapshot.jsonl`
-- last line includes `DEV_MAN_ARTIFACT: .devman/out/fileman/snapshot.jsonl`
-
-### 5.2 Quick sanity checks on output
-- JSONL file contains exactly **one line**
-- The JSON includes:
-  - `schema: fileman.snapshot.v1`
-  - `generated_at`
-  - `tree.type == "dir"`
-  - `options.exclude` includes `.devman`
 
 ---
 
-## 6) Quality & Devman constraints checklist
+## References
 
-- ✅ **Just-first**: primary interface is `just fileman:snapshot`
-- ✅ **Store-owned artifacts**: writes only under `.devman/out/fileman/…`
-- ✅ **Symlink-friendly**: never traverses `.devman/` by default
-- ✅ **Safe-by-default**: no destructive operations; simulate mode supported
-- ✅ **Idempotent**: re-running overwrites snapshot file
-- ✅ **Composable**: imported `devenv.nix` module + just fragment
+### Documentation
 
----
+- Python pathlib: https://docs.python.org/3/library/pathlib.html
+- Pydantic: https://docs.pydantic.dev/
+- UV scripts: https://docs.astral.sh/uv/guides/scripts/
+- Justfile: https://just.systems/man/en/
 
-## 7) Optional enhancements (only after minimal passes)
+### Project Files
 
-Keep these behind flags to preserve speed:
-
-- `--sort name` for deterministic tree ordering (slower)
-- `--hash` to add file hashes (expensive; off by default)
-- `--stream` JSONL mode to emit one record per node (no full tree in memory)
-- include `git` context: current commit, dirty flag (cheap)
-
+- `CONCEPT_MVP_LSD.md` - MVP specification
+- `Justfile` - Task automation
+- `devenv.nix` - Package management
+- `scripts/fileman` - Main script
