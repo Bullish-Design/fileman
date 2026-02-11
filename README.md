@@ -27,6 +27,26 @@ uv run scripts/fileman list filetree.json
 uv run scripts/fileman show filetree.json
 ```
 
+## Ignore rules with `.scanignore`
+
+When scanning, `fileman` now looks for a `.scanignore` file in the scan root and applies gitignore-style matching.
+
+Example:
+
+```gitignore
+# Ignore Python cache folders anywhere
+__pycache__/
+
+# Ignore all log files
+*.log
+
+# Ignore only a root-level build folder
+/build/
+
+# Re-include one file
+!important.log
+```
+
 ## Output format
 
 `scan` writes `filetree.json` with this shape:
