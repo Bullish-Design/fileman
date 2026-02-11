@@ -1,0 +1,164 @@
+#!/usr/bin/env -S uv run
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#   "pydantic>=2.0",
+# ]
+# ///
+
+from __future__ import annotations
+
+import stat
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class FileEntry(BaseModel):
+    """Single filesystem entry captured during a scan."""
+
+    path: str
+    name: str
+    type: Literal["file", "directory", "symlink"]
+    size: int = Field(ge=0, description="Size in bytes")
+    permissions: str = Field(pattern=r"^[rwx-]{9}$")
+    modified: datetime
+    extension: str | None = None
+    target: str | None = None
+
+
+class FileTree(BaseModel):
+    """Complete result from scanning a root directory."""
+
+    root: str
+    scanned_at: datetime
+    entries: list[FileEntry]
+
+
+def process_path(path: Path) -> FileEntry:
+    """Collect metadata for one path into a FileEntry model."""
+
+    if path.is_symlink():
+        entry_type: Literal["symlink", "directory", "file"] = "symlink"
+        entry_target = str(path.readlink())
+        path_stat = path.lstat()
+    elif path.is_dir():
+        entry_type = "directory"
+        entry_target = None
+        path_stat = path.stat()
+    else:
+        entry_type = "file"
+        entry_target = None
+        path_stat = path.stat()
+
+    permissions = stat.filemode(path_stat.st_mode)[1:]
+    extension = path.suffix if entry_type == "file" else None
+
+    return FileEntry(
+        path=str(path.absolute()),
+        name=path.name,
+        type=entry_type,
+        size=path_stat.st_size,
+        permissions=permissions,
+        modified=datetime.fromtimestamp(path_stat.st_mtime),
+        extension=extension,
+        target=entry_target,
+    )
+
+
+def scan_directory(root: Path) -> FileTree:
+    """Recursively scan a root directory and return structured metadata."""
+
+    entries: list[FileEntry] = []
+
+    try:
+        for item in root.rglob("*"):
+            try:
+                entries.append(process_path(item))
+            except (PermissionError, OSError):
+                continue
+    except (PermissionError, OSError):
+        pass
+
+    return FileTree(root=str(root.absolute()), scanned_at=datetime.now(), entries=entries)
+
+
+def format_size(size: int) -> str:
+    """Convert bytes into a human-readable size string."""
+
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024.0:
+            return f"{value:.1f}{unit}"
+        value /= 1024.0
+    return f"{value:.1f}TB"
+
+
+def cmd_scan(path_str: str = ".", output_file: str = "filetree.json") -> None:
+    """Scan a directory and write JSON output."""
+
+    root = Path(path_str)
+    tree = scan_directory(root)
+
+    with Path(output_file).open("w", encoding="utf-8") as output_handle:
+        output_handle.write(tree.model_dump_json(indent=2))
+
+    print(f"Scanned {len(tree.entries)} entries from {tree.root}")
+    print(f"Saved JSON to {output_file}")
+
+
+def cmd_list(input_file: str = "filetree.json") -> None:
+    """Read JSON and print a compact list of paths."""
+
+    tree = FileTree.model_validate_json(Path(input_file).read_text(encoding="utf-8"))
+
+    for entry in tree.entries:
+        print(f"{entry.type:9} {entry.path}")
+
+
+def cmd_show(input_file: str = "filetree.json") -> None:
+    """Read JSON and print a detailed listing view."""
+
+    tree = FileTree.model_validate_json(Path(input_file).read_text(encoding="utf-8"))
+
+    print(f"Root:    {tree.root}")
+    print(f"Scanned: {tree.scanned_at.isoformat()}")
+    print(f"Entries: {len(tree.entries)}")
+
+    for entry in tree.entries:
+        target_part = f" -> {entry.target}" if entry.target else ""
+        print(
+            f"{entry.permissions} {format_size(entry.size):>8} "
+            f"{entry.modified:%Y-%m-%d %H:%M} {entry.path}{target_part}"
+        )
+
+
+def main(argv: list[str]) -> int:
+    """CLI entrypoint for scan/list/show commands."""
+
+    if len(argv) < 2:
+        print("Usage: fileman {scan|list|show} [path_or_json]", file=sys.stderr)
+        return 1
+
+    command = argv[1]
+    argument = argv[2] if len(argv) > 2 else "."
+
+    if command == "scan":
+        cmd_scan(argument)
+        return 0
+    if command == "list":
+        cmd_list(argument if argument != "." else "filetree.json")
+        return 0
+    if command == "show":
+        cmd_show(argument if argument != "." else "filetree.json")
+        return 0
+
+    print(f"Unknown command: {command}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
