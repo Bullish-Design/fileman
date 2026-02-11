@@ -12,6 +12,7 @@ import stat
 import sys
 from datetime import datetime
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -36,6 +37,15 @@ class FileTree(BaseModel):
     root: str
     scanned_at: datetime
     entries: list[FileEntry]
+
+
+class IgnoreRule(BaseModel):
+    """Single ignore rule parsed from a .scanignore file."""
+
+    pattern: str
+    negated: bool = False
+    anchored: bool = False
+    directory_only: bool = False
 
 
 def process_path(path: Path) -> FileEntry:
@@ -69,14 +79,111 @@ def process_path(path: Path) -> FileEntry:
     )
 
 
+def parse_ignore_rules(root: Path) -> list[IgnoreRule]:
+    """Load ignore rules from <root>/.scanignore using gitignore-like syntax."""
+
+    ignore_file = root / ".scanignore"
+    if not ignore_file.exists():
+        return []
+
+    rules: list[IgnoreRule] = []
+
+    for raw_line in ignore_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        negated = line.startswith("!")
+        if negated:
+            line = line[1:].strip()
+            if not line:
+                continue
+
+        anchored = line.startswith("/")
+        if anchored:
+            line = line[1:]
+
+        directory_only = line.endswith("/")
+        if directory_only:
+            line = line[:-1]
+
+        if not line:
+            continue
+
+        rules.append(
+            IgnoreRule(
+                pattern=line,
+                negated=negated,
+                anchored=anchored,
+                directory_only=directory_only,
+            )
+        )
+
+    return rules
+
+
+def _path_matches_pattern(path_text: str, pattern: str, anchored: bool) -> bool:
+    """Return True if a relative path text matches a rule pattern."""
+
+    path_obj = PurePosixPath(path_text)
+    if anchored:
+        return path_obj.match(pattern)
+    if "/" in pattern:
+        return path_obj.match(pattern) or path_obj.match(f"**/{pattern}")
+    return path_obj.match(pattern) or path_obj.match(f"**/{pattern}")
+
+
+def _directory_prefixes(relative_path: str, is_directory: bool) -> list[str]:
+    """Return all directory prefixes for a relative path."""
+
+    parts = PurePosixPath(relative_path).parts
+    if not parts:
+        return []
+
+    max_index = len(parts) if is_directory else len(parts) - 1
+    return ["/".join(parts[:i]) for i in range(1, max_index + 1)]
+
+
+def _rule_matches(relative_path: str, is_directory: bool, rule: IgnoreRule) -> bool:
+    """Check if one ignore rule applies to a path."""
+
+    if rule.directory_only:
+        for prefix in _directory_prefixes(relative_path, is_directory):
+            if _path_matches_pattern(prefix, rule.pattern, rule.anchored):
+                return True
+        return False
+
+    return _path_matches_pattern(relative_path, rule.pattern, rule.anchored)
+
+
+def is_ignored(path: Path, root: Path, rules: list[IgnoreRule]) -> bool:
+    """Evaluate ignore rules for one path. Later rules override earlier rules."""
+
+    if not rules:
+        return False
+
+    relative_path = path.relative_to(root).as_posix()
+    is_directory = path.is_dir() and not path.is_symlink()
+
+    ignored = False
+    for rule in rules:
+        if _rule_matches(relative_path, is_directory, rule):
+            ignored = not rule.negated
+
+    return ignored
+
+
 def scan_directory(root: Path) -> FileTree:
     """Recursively scan a root directory and return structured metadata."""
 
     entries: list[FileEntry] = []
+    ignore_rules = parse_ignore_rules(root)
 
     try:
         for item in root.rglob("*"):
             try:
+                if is_ignored(item, root, ignore_rules):
+                    continue
                 entries.append(process_path(item))
             except (PermissionError, OSError):
                 continue
